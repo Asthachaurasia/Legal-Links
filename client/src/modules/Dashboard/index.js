@@ -1,114 +1,175 @@
-import React, { useState, useEffect,useRef } from 'react';
-import Avatar from '../../assets/avatar.svg'; // Corrected the import statement
+import React, { useState, useEffect, useRef } from 'react';
+import { useLocation } from 'react-router-dom';
+import Avatar from '../../assets/avatar.svg';
 import Input from "../../components/input";
-import {io} from 'socket.io-client';
+import { io } from 'socket.io-client';
 import Sidebar from '../../components/Sidebar';
+
 const Dashboard = () => {
-    const [user, setUser] = useState(JSON.parse(localStorage.getItem('user:detail')));
-    const [conversations, setConversations] = useState([]);
-    const [messages,setMessages]= useState({});
-    const [message,setMessage]=useState('');
-    const [socket,setSocket]=useState(null);
-    const  messageRef= useRef(null);
-console.log("messages",messages);
-    useEffect(() => {
+  const [user, setUser] = useState(JSON.parse(localStorage.getItem('user:detail')));
+  const [conversations, setConversations] = useState([]);
+  const [messages, setMessages] = useState({ messages: [], receiver: null, conversationId: null });
+  const [message, setMessage] = useState('');
+  const [socket, setSocket] = useState(null);
+  const messageRef = useRef(null);
+  const location = useLocation();
 
-         setSocket(io('http://localhost:8080'));
-    },[])
+  // Extract the lawyerId from the query parameters
+  const queryParams = new URLSearchParams(location.search);
+  const lawyerId = queryParams.get('lawyerId');
 
-    useEffect(() => {
-      socket?.emit('addUser',user?.id);
-        socket?.on('getUsers',(users)=>{
-            console.log("active user",users);
-        });
-        socket?.on('getMessage',(data)=>{
-            console.log("data",data);
-            setMessages(prev => ({
-                ...prev,
-                messages: [...(prev.messages || []), { message: data.message, user: { id: data.user } }]
-            }));
-        })
-        
-   },[socket])
+  // Initialize socket connection
+  useEffect(() => {
+    setSocket(io('http://localhost:8080'));
+  }, []);
 
-   
-         useEffect(() => {
-            messageRef?.current?.scrollIntoView({ behavior: 'smooth'});
-         }, [messages?.messages]);
+  // Add user to socket and listen for messages
+  useEffect(() => {
+    socket?.emit('addUser', user?.id);
+    socket?.on('getUsers', (users) => {
+      console.log("active user", users);
+    });
+    socket?.on('getMessage', (data) => {
+      console.log("data", data);
+      setMessages(prev => ({
+        ...prev,
+        messages: [...(prev.messages || []), { message: data.message, user: { id: data.user } }]
+      }));
+    });
+  }, [socket]);
 
+  // Scroll to the latest message
+  useEffect(() => {
+    messageRef?.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages?.messages]);
 
+  // Fetch conversations for the user
+  useEffect(() => {
+    const fetchConversations = async () => {
+      const res = await fetch(`http://localhost:4000/conversation/${user.id}`, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+      const resData = await res.json();
+      console.log("Conversations API Response:", resData);
 
-    useEffect(() => {
-        const fetchConversations = async () => {
-            const res = await fetch(`http://localhost:4000/conversation/${user.id}`, {
-                method: 'GET',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
+      if (Array.isArray(resData.allconversation)) {
+        setConversations(resData.allconversation);
+      } else {
+        setConversations([]);
+      }
+    };
+    if (user) {
+      fetchConversations();
+    }
+  }, [user]);
+
+  // Fetch lawyer details and messages when a lawyer is selected
+  useEffect(() => {
+    if (lawyerId) {
+      console.log("Conversations:", conversations);
+      const conversation = conversations.find(conv => conv.talker.id === lawyerId);
+
+      if (conversation) {
+        // If a conversation exists, fetch the messages
+        fetchMessage(conversation.conversationId, conversation.talker);
+      } else {
+        // If no conversation exists, fetch the lawyer details
+        const fetchLawyerDetails = async () => {
+          try {
+            const res = await fetch(`http://localhost:4000/lawyer/fetch/${lawyerId}`, {
+              method: 'GET',
+              headers: {
+                'Content-Type': 'application/json',
+              },
             });
-            const resData = await res.json();
-             
+            const lawyerData = await res.json();
+            console.log("Lawyer Details:", lawyerData.details );
 
-            // Check if the response contains the 'allconversation' key and it's an array
-            if (Array.isArray(resData.allconversation)) {
-                setConversations(resData.allconversation); // Set the array of conversations
-            } else {
-                setConversations([]); // In case it's not an array, set an empty array
-            }
+            // Set the selected lawyer in the messages state
+            setMessages(prev => ({
+              ...prev,
+              receiver: lawyerData.details, // Assuming the API returns the lawyer's details
+              messages: [], // No messages yet
+              conversationId: null, // No conversation ID yet
+            }));
+          } catch (error) {
+            console.error("Error fetching lawyer details:", error);
+          }
         };
-        if (user) {
-            fetchConversations();
-        }
-    }, [user]);
 
-    const fetchMessage= async (conversationId,user)=>{
-        const res = await fetch(`http://localhost:4000/message/${conversationId}`,{
-            method:'Get',
-            headers:{
-                'Content-Type':'application/json',
+        fetchLawyerDetails();
+      }
+    }
+  }, [lawyerId, conversations]);
 
-            }
-        });
-        const resData= await res.json()
-        console.log('resData ',resData);
-        setMessages( {messages:resData.fetched_messages, receiver:user,conversationId})
+  // Fetch messages for a specific conversation
+  const fetchMessage = async (conversationId, user) => {
+    console.log("Fetching messages for conversationId:", conversationId);
+    const res = await fetch(`http://localhost:4000/message/${conversationId}`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+      }
+    });
+    const resData = await res.json();
+    console.log('resData ', resData);
+    setMessages({ messages: resData.fetched_messages, receiver: user, conversationId });
+  };
+
+  // Send a message
+  const sendMessage = async () => {
+    let conversationId = messages?.conversationId;
+
+    // If no conversation ID exists, create a new conversation
+    if (!conversationId) {
+      const res = await fetch(`http://localhost:4000/conversation/create`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          senderId: user?.id,
+          receiverId: messages?.receiver?.id,
+        }),
+      });
+      const resData = await res.json();
+      conversationId = resData.conversationId;
+      console.log("New Conversation Created:", resData);
     }
 
-
-
- 
-
-
-const sendMessage = async (e) => {
+    // Send the message
     const newMessage = {
-        senderId: user?.id,
-        message,
-        conversationId: messages?.conversationId,
-        receiverId: messages?.receiver?.id
+      senderId: user?.id,
+      message,
+      conversationId,
+      receiverId: messages?.receiver?.id,
     };
 
     // Optimistically update UI
     setMessages(prev => ({
-        ...prev,
-        messages: [...(prev.messages || []), { message, user: { id: user?.id } }]
+      ...prev,
+      messages: [...(prev.messages || []), { message, user: { id: user?.id } }],
+      conversationId, // Update the conversationId in the state
     }));
 
     socket?.emit('sendMessage', newMessage);
 
     // Send to backend to persist
     const res = await fetch(`http://localhost:4000/message/create`, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(newMessage)
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(newMessage),
     });
 
     const resData = await res.json();
     console.log("resMessage", resData);
     setMessage('');
-};
-
+  };
     return (
         <div className='w-screen flex'>
 
@@ -138,7 +199,7 @@ const sendMessage = async (e) => {
                         alt="Avatar"
                     />
                     <div className='ml-8'>
-                        <h3 className="text-2xl">{user?.name}</h3>
+                        <h3 className="text-2xl">{user?.name} {user?.id}</h3>
                         <p className="text-lg font-light">My Account</p>
                     </div>
                 </div>
@@ -174,7 +235,9 @@ const sendMessage = async (e) => {
 
             {/* Main Content Section */}
             <div className='w-[100%] h-screen bg-white flex flex-col items-center'>
+                    
                 {
+                     
                     messages?.receiver?.name&&
 
                     <div className='w-[75%] bg-secondary h-[60px] my-14 rounded-full flex items-center px-14'>
@@ -216,7 +279,7 @@ const sendMessage = async (e) => {
                                     ) 
                                 }
                                 
-                            }):<div className='text-center text-lg font-semibold mt-24'>No Conversation selected  </div>
+                            }):<div className='text-center text-lg font-semibold mt-24'>Start Conversation  </div>
                          }
                     </div>
                 </div>
@@ -251,3 +314,7 @@ const sendMessage = async (e) => {
 }
 
 export default Dashboard;
+
+
+
+  
